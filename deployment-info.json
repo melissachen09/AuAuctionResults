@@ -1,0 +1,13 @@
+{
+  "deployedAt": "2025-07-05T12:30:57Z",
+  "deploymentUrl": "https://au-auction-results-1751718481-fv68stjcx-yqm0nk3ys-projects.vercel.app",
+  "apiSecret": "I3pqIWtzjDmH93N7gTGb6r/z590dqpH3wGPmX35dTi0=",
+  "important": "请立即在 Vercel Dashboard 中创建 Postgres 数据库！",
+  "nextSteps": [
+    "1. 访问 Vercel Dashboard",
+    "2. 选择你的项目",
+    "3. 点击 Storage → Create Database → Postgres",
+    "4. 选择 Sydney 区域",
+    "5. 数据库创建后运行: vercel env pull && npx prisma migrate deploy"
+  ]
+}

@@ -1,0 +1,20 @@
+Vercel CLI 44.2.12
+The "--name" option is deprecated (https://vercel.link/name-flag)
+Loading scopes…
+Searching for existing projects…
+Local settings detected in vercel.json:
+- Build Command: prisma generate && next build
+- Framework: nextjs
+- Install Command: npm install
+Merging default Project Settings for Next.js. Previously listed overrides are prioritized.
+Auto-detected Project Settings (Next.js):
+- Development Command: next dev --port $PORT
+- Output Directory: Next.js default
+Linked to yqm0nk3ys-projects/au-auction-results-1751718481 (created .vercel)
+Deploying yqm0nk3ys-projects/au-auction-results-1751718481
+Uploading [--------------------] (0.0B/361.1KB)
+Uploading [=====---------------] (91.1KB/361.1KB)
+Uploading [==========----------] (183.3KB/361.1KB)
+Uploading [===============-----] (279.3KB/361.1KB)
+Uploading [====================] (361.1KB/361.1KB)
+Error: Environment Variable "DATABASE_URL" references Secret "database_url", which does not exist.
