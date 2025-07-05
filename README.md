@@ -28,41 +28,47 @@
 
 ### 前置要求
 
-- Node.js 18+ 
+- Node.js 18+
 - npm 或 yarn
 - PostgreSQL 数据库
 
 ### 本地开发
 
 1. 克隆仓库
+
 ```bash
-git clone https://github.com/yourusername/au-auction-results.git
+git clone https://github.com/melissachen09/AuAuctionResults.git
 cd au-auction-results
 ```
 
 2. 安装依赖
+
 ```bash
 npm install
 ```
 
 3. 配置环境变量
+
 ```bash
 cp .env.example .env
 ```
 
 编辑 `.env` 文件，设置以下变量：
+
 ```env
 DATABASE_URL="postgresql://user:password@host:port/database?schema=public"
 NODE_ENV="development"
 ```
 
 4. 初始化数据库
+
 ```bash
 npx prisma generate
 npx prisma migrate dev
 ```
 
 5. 启动开发服务器
+
 ```bash
 npm run dev
 ```
@@ -97,10 +103,13 @@ au-auction-results/
 ## 📡 API 端点
 
 ### 获取城区数据
+
 ```
 GET /api/suburbs
 ```
+
 参数:
+
 - `state`: 州代码 (NSW, VIC, QLD 等)
 - `date`: 日期 (YYYY-MM-DD)
 - `sortBy`: 排序字段
@@ -109,24 +118,31 @@ GET /api/suburbs
 - `limit`: 每页数量
 
 ### 获取城区详情
+
 ```
 GET /api/suburbs/[suburb]
 ```
 
 ### 获取趋势数据
+
 ```
 GET /api/trends
 ```
+
 参数:
+
 - `suburb`: 城区名称
 - `state`: 州代码
 - `period`: 时间段 (4weeks, 12weeks, 6months, 1year)
 
 ### 触发数据抓取
+
 ```
 POST /api/scrape
 ```
+
 请求体:
+
 ```json
 {
   "source": "domain" | "rea" | "all",
@@ -148,6 +164,7 @@ POST /api/scrape
 ### 数据库设置
 
 推荐使用 Vercel Postgres：
+
 1. 在 Vercel 项目中启用 Postgres
 2. 复制连接字符串到环境变量
 3. 运行数据库迁移
