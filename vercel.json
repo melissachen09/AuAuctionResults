@@ -1,0 +1,14 @@
+{
+  "buildCommand": "prisma generate && next build",
+  "installCommand": "npm install",
+  "framework": "nextjs",
+  "regions": ["syd1"],
+  "env": {
+    "DATABASE_URL": "@database_url"
+  },
+  "functions": {
+    "src/app/api/scrape/route.ts": {
+      "maxDuration": 300
+    }
+  }
+}
