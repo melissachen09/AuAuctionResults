@@ -1,10 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { ScraperService } from '@/lib/scrapers/scraper-service';
+import { validateApiKey } from '@/lib/auth';
 
-// This endpoint should be protected in production
 export async function POST(request: NextRequest) {
+  // Validate API key in production
+  if (process.env.NODE_ENV === 'production' && !validateApiKey(request)) {
+    return NextResponse.json(
+      { error: 'Unauthorized' },
+      { status: 401 }
+    );
+  }
+
   try {
-    // In production, add authentication here
     const { source, date } = await request.json();
     
     const scraperService = new ScraperService();
