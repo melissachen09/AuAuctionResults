@@ -3,12 +3,21 @@ import { load } from 'cheerio';
 import PQueue from 'p-queue';
 import { RawAuctionData, ScraperConfig, ScraperResult } from './types';
 
+interface REAScraperConfig extends ScraperConfig {
+  maxSuburbsPerCity?: number;
+  antiDetectionDelay?: number;
+}
+
 export class REAScraper {
-  private config: ScraperConfig;
+  private config: REAScraperConfig;
   private browser: Browser | null = null;
 
-  constructor(config: ScraperConfig) {
-    this.config = config;
+  constructor(config: REAScraperConfig) {
+    this.config = {
+      ...config,
+      maxSuburbsPerCity: config.maxSuburbsPerCity || 5,
+      antiDetectionDelay: config.antiDetectionDelay || 3000
+    };
   }
 
   private async safeOperation<T>(operation: () => Promise<T>, operationName: string, maxRetries = 3): Promise<T> {
@@ -50,7 +59,13 @@ export class REAScraper {
   async initialize() {
     this.browser = await chromium.launch({
       headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-blink-features=AutomationControlled',
+        '--disable-features=site-per-process',
+        '--disable-web-security'
+      ],
     });
   }
 
@@ -65,43 +80,36 @@ export class REAScraper {
       await this.initialize();
       const results: RawAuctionData[] = [];
       
-      // Get the auction results page
-      const page = await this.browser!.newPage();
-      await page.goto('https://www.realestate.com.au/auction-results/', {
-        waitUntil: 'networkidle',
-        timeout: this.config.timeout,
-      });
+      // Define state URLs directly
+      const stateUrls = [
+        { url: 'https://www.realestate.com.au/auction-results/vic', state: 'VIC' },
+        { url: 'https://www.realestate.com.au/auction-results/nsw', state: 'NSW' },
+        { url: 'https://www.realestate.com.au/auction-results/qld', state: 'QLD' },
+        { url: 'https://www.realestate.com.au/auction-results/sa', state: 'SA' },
+        { url: 'https://www.realestate.com.au/auction-results/wa', state: 'WA' },
+        { url: 'https://www.realestate.com.au/auction-results/act', state: 'ACT' },
+        { url: 'https://www.realestate.com.au/auction-results/tas', state: 'TAS' },
+        { url: 'https://www.realestate.com.au/auction-results/nt', state: 'NT' }
+      ];
 
-      // Wait for content to load using semantic approach
-      await this.safeOperation(
-        () => page.waitForSelector('main, [role="main"], .auction-results', { timeout: 10000 }),
-        'Wait for main content'
-      );
-
-      // Get all state links using semantic selectors
-      const stateLinks = await this.safeOperation(
-        () => page.$$eval('a[href*="auction-results"]', (links) =>
-          links.map((link) => ({
-            href: link.getAttribute('href'),
-            state: link.textContent?.trim(),
-          })).filter((item) => item.href && item.state && item.href.includes('auction-results'))
-        ),
-        'Extract state links'
-      );
-
-      const queue = new PQueue({ concurrency: this.config.maxConcurrency });
-
-      // Process each state
-      for (const stateLink of stateLinks) {
-        queue.add(async () => {
-          const stateResults = await this.scrapeState(stateLink.href!, stateLink.state!);
+      console.log(`Starting REA scraper with ${stateUrls.length} states`);
+      
+      // Process states sequentially to avoid detection
+      for (const stateInfo of stateUrls.slice(0, 2)) { // Start with just 2 states
+        try {
+          console.log(`Processing state: ${stateInfo.state}`);
+          const stateResults = await this.scrapeState(stateInfo);
           results.push(...stateResults);
-        });
+          
+          // Add delay between states
+          await this.delay(this.config.antiDetectionDelay!);
+        } catch (error) {
+          console.error(`Error processing state ${stateInfo.state}:`, error);
+        }
       }
-
-      await queue.onIdle();
       await this.close();
 
+      console.log(`REA scraper completed: ${results.length} properties found`);
       return {
         success: true,
         data: results,
@@ -117,55 +125,55 @@ export class REAScraper {
     }
   }
 
-  private async scrapeState(stateUrl: string, stateName: string): Promise<RawAuctionData[]> {
+  private async scrapeState(stateInfo: { url: string; state: string }): Promise<RawAuctionData[]> {
     const results: RawAuctionData[] = [];
     const page = await this.browser!.newPage();
 
     try {
-      await page.goto(stateUrl, {
-        waitUntil: 'networkidle',
-        timeout: this.config.timeout,
+      // Set realistic viewport
+      await page.setViewportSize({ width: 1920, height: 1080 });
+      
+      // Add extra headers to appear more legitimate
+      await page.setExtraHTTPHeaders({
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Cache-Control': 'max-age=0',
+        'Upgrade-Insecure-Requests': '1'
       });
 
-      // Wait for suburb list using semantic selectors
-      await this.safeOperation(
-        () => page.waitForSelector('main, [role="main"], .suburb-list, ul, nav', { timeout: 10000 }),
-        'Wait for suburb list'
-      );
+      console.log(`Navigating to: ${stateInfo.url}`);
+      await page.goto(stateInfo.url, {
+        waitUntil: 'domcontentloaded',
+        timeout: 30000,
+      });
 
-      // Get suburb links using intelligent content-based selection
-      const suburbData = await this.safeOperation(
-        () => page.$$eval('a[href*="auction-results"]', (links) => {
-          return links.map((link) => {
-            const href = link.getAttribute('href');
-            const text = link.textContent?.trim();
-            
-            // Extract suburb and postcode from text or URL
-            const postcodeMatch = text?.match(/\b\d{4}\b/) || href?.match(/\b\d{4}\b/);
-            const suburb = text?.replace(/\b\d{4}\b/, '').trim();
-            
-            return {
-              href,
-              suburb,
-              postcode: postcodeMatch?.[0],
-            };
-          }).filter((item) => item.href && item.suburb && item.href.split('/').length > 4);
-        }),
-        'Extract suburb data'
-      );
+      // Wait for initial content and handle bot protection
+      await this.delay(5000);
+      
+      // Check for bot protection
+      const bodyText = await page.textContent('body');
+      if (bodyText?.includes('checking your browser') || bodyText?.includes('Kasada')) {
+        console.log('Bot protection detected, waiting longer...');
+        await this.delay(10000);
+      }
 
-      // Process each suburb
-      for (const suburb of suburbData) {
-        const suburbResults = await this.scrapeSuburb(
-          suburb.href!,
-          suburb.suburb!,
-          stateName,
-          suburb.postcode || ''
-        );
+      // Try to find suburb links
+      const suburbLinks = await this.extractSuburbLinks(page);
+      console.log(`Found ${suburbLinks.length} suburbs in ${stateInfo.state}`);
+
+      // Process limited suburbs to avoid detection
+      const suburbsToProcess = suburbLinks.slice(0, this.config.maxSuburbsPerCity!);
+      
+      for (let i = 0; i < suburbsToProcess.length; i++) {
+        console.log(`Processing suburb ${i + 1}/${suburbsToProcess.length}: ${suburbsToProcess[i].name}`);
+        const suburbResults = await this.scrapeSuburb(suburbsToProcess[i], stateInfo.state);
         results.push(...suburbResults);
+        
+        // Random delay between suburbs
+        await this.delay(2000 + Math.random() * 3000);
       }
     } catch (error) {
-      console.error(`Error scraping state ${stateName}:`, error);
+      console.error(`Error scraping state ${stateInfo.state}:`, error);
     } finally {
       await page.close();
     }
@@ -173,97 +181,175 @@ export class REAScraper {
     return results;
   }
 
-  private async scrapeSuburb(
-    suburbUrl: string,
-    suburbName: string,
-    stateName: string,
-    postcode: string
-  ): Promise<RawAuctionData[]> {
+  private async extractSuburbLinks(page: any): Promise<Array<{ url: string; name: string }>> {
+    try {
+      // Wait for suburb links with multiple possible selectors
+      await this.safeOperation(
+        () => page.waitForSelector('a[href*="/auction-results/"], .suburb-link, [data-testid="suburb-link"]', { timeout: 15000 }),
+        'Wait for suburb links'
+      );
+
+      // Extract links
+      return await page.$$eval('a[href*="/auction-results/"]', (links: any[]) =>
+        links
+          .filter(link => {
+            const href = link.getAttribute('href');
+            // Filter for suburb-specific links
+            return href && href.includes('/auction-results/') && 
+                   (href.match(/\/auction-results\/[a-z]+\/[^/]+$/i) || 
+                    href.includes('-') && href.split('/').length > 4);
+          })
+          .map(link => ({
+            url: link.getAttribute('href'),
+            name: link.textContent?.trim() || ''
+          }))
+          .slice(0, 20) // Limit to prevent too many suburbs
+      );
+    } catch (error) {
+      console.error('Failed to extract suburb links:', error);
+      return [];
+    }
+  }
+
+  private async scrapeSuburb(suburbInfo: { url: string; name: string }, state: string): Promise<RawAuctionData[]> {
     const results: RawAuctionData[] = [];
     const page = await this.browser!.newPage();
 
     try {
-      await page.goto(suburbUrl, {
-        waitUntil: 'networkidle',
-        timeout: this.config.timeout,
+      const fullUrl = suburbInfo.url.startsWith('http') ? suburbInfo.url : `https://www.realestate.com.au${suburbInfo.url}`;
+      console.log(`Scraping suburb: ${fullUrl}`);
+      
+      // Set user agent for each page
+      await page.setExtraHTTPHeaders({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      });
+      
+      await page.goto(fullUrl, {
+        waitUntil: 'domcontentloaded',
+        timeout: 30000,
       });
 
-      // Wait for auction results using semantic selectors
+      // Wait for content
+      await this.delay(3000);
+
+      // Extract suburb details from URL
+      const urlMatch = fullUrl.match(/\/auction-results\/([^/]+)\/([^/]+)$/);
+      const suburb = urlMatch ? urlMatch[2].replace(/-/g, ' ') : suburbInfo.name;
+      
+      // Try to extract postcode from page or URL
+      const pageText = await page.textContent('body');
+      const postcodeMatch = pageText?.match(/\b([0-9]{4})\b/);
+      const postcode = postcodeMatch ? postcodeMatch[1] : '';
+
+      // Wait for property listings
       await this.safeOperation(
-        () => page.waitForSelector('main, [role="main"], .auction-results-list, article, .property', { timeout: 10000 }),
-        'Wait for auction results'
+        () => page.waitForSelector('article, .property-card, [data-testid="property"], .listing-card, .auction-result', { timeout: 15000 }),
+        'Wait for property listings'
       );
 
       const html = await page.content();
       const $ = load(html);
 
-      // Parse auction results using intelligent content detection
-      const potentialContainers = $('div, article, section, li').filter((_, element) => {
-        const text = $(element).text();
-        return this.looksLikeAuctionResult(text);
-      });
+      // Find property elements
+      const propertySelectors = [
+        'article.property-card',
+        'div.property-card',
+        'article[data-testid="property"]',
+        'div.listing-card',
+        'div.auction-result',
+        'article[class*="Card"]',
+        'div[class*="property"][class*="card"]'
+      ];
+      
+      const $properties = $(propertySelectors.join(', '));
+      console.log(`Found ${$properties.length} property elements in ${suburb}`);
 
-      potentialContainers.each((_, element) => {
+      $properties.each((index, element) => {
         try {
           const $el = $(element);
           
-          const allText = $el.text();
-          const address = this.extractAddress(allText);
-          const priceText = this.extractPrice(allText);
-          const resultBadge = this.extractResult(allText);
-          const propertyType = this.extractPropertyType(allText);
+          // Extract address
+          const addressEl = $el.find('h2, h3, .property-address, [data-testid="address"], a[href*="/property-"]').first();
+          const address = addressEl.text().trim();
           
-          // Extract property features using intelligent parsing
-          const bedrooms = this.extractBedrooms(allText);
-          const bathrooms = this.extractBathrooms(allText);
-          const carSpaces = this.extractCarSpaces(allText);
-          
-          const agentName = this.extractAgentName(allText);
-          const agencyName = this.extractAgencyName(allText);
-          const propertyUrl = this.extractPropertyUrl($el);
-
-          // Parse price
+          // Extract price
+          const priceEl = $el.find('.property-price, [data-testid="price"], .price, span:contains("$")').first();
+          const priceText = priceEl.text().trim();
           let price: number | undefined;
-          if (priceText && !priceText.includes('Undisclosed')) {
+          if (priceText && priceText !== 'Undisclosed') {
             const priceMatch = priceText.match(/\$?([\d,]+)/);
             if (priceMatch) {
               price = parseInt(priceMatch[1].replace(/,/g, ''));
             }
           }
-
-          // Determine result
+          
+          // Extract result
+          const statusEl = $el.find('.property-status, .status, [data-testid="status"], .tag').first();
+          const statusText = statusEl.text().trim().toLowerCase();
           let result: 'sold' | 'passed_in' | 'withdrawn' = 'passed_in';
-          if (resultBadge.includes('sold')) {
+          if (statusText.includes('sold') || (price && price > 0)) {
             result = 'sold';
-          } else if (resultBadge.includes('withdrawn') || resultBadge.includes('cancelled')) {
+          } else if (statusText.includes('withdrawn')) {
             result = 'withdrawn';
           }
+          
+          // Extract property details
+          const detailsEl = $el.find('.property-features, .features, [data-testid="property-features"]');
+          const detailsText = detailsEl.text();
+          
+          const bedrooms = this.extractNumber(detailsText, /(\d+)\s*bed/i);
+          const bathrooms = this.extractNumber(detailsText, /(\d+)\s*bath/i);
+          const carSpaces = this.extractNumber(detailsText, /(\d+)\s*car/i);
+          
+          // Extract property type
+          const typeMatch = $el.text().match(/\b(house|apartment|unit|townhouse|villa|duplex)\b/i);
+          const propertyType = typeMatch ? typeMatch[1] : 'House';
+          
+          // Extract agent info
+          const agentEl = $el.find('.agent-name, [data-testid="agent-name"]').first();
+          const agentName = agentEl.text().trim() || undefined;
+          
+          const agencyEl = $el.find('.agency-name, [data-testid="agency-name"]').first();
+          const agencyName = agencyEl.text().trim() || undefined;
+          
+          // Extract property URL
+          const propertyLink = $el.find('a[href*="/property-"]').first();
+          const propertyUrl = propertyLink.attr('href');
+          const fullPropertyUrl = propertyUrl ? 
+            (propertyUrl.startsWith('http') ? propertyUrl : `https://www.realestate.com.au${propertyUrl}`) : 
+            undefined;
 
-          if (address) {
+          if (address && address.length > 5 && address.length < 200) {
+            const cleanSuburb = suburb.charAt(0).toUpperCase() + suburb.slice(1).toLowerCase();
+            
             results.push({
               address,
-              suburb: suburbName,
-              state: this.getStateCode(stateName),
-              postcode: postcode || this.extractPostcode(address),
+              suburb: cleanSuburb,
+              state,
+              postcode,
               price,
               result,
               auctionDate: new Date(),
               source: 'rea',
-              propertyType: propertyType || 'House',
+              propertyType,
               bedrooms,
               bathrooms,
               carSpaces,
-              agentName: agentName || undefined,
-              agencyName: agencyName || undefined,
-              propertyUrl: propertyUrl || undefined,
+              agentName,
+              agencyName,
+              propertyUrl: fullPropertyUrl,
             });
+            
+            if (index < 3) {
+              console.log(`Sample property ${index + 1}: ${address} - ${result} ${priceText}`);
+            }
           }
         } catch (error) {
-          console.error('Error parsing auction result:', error);
+          console.error('Error parsing property:', error);
         }
       });
     } catch (error) {
-      console.error(`Error scraping suburb ${suburbName}:`, error);
+      console.error(`Error scraping suburb ${suburbInfo.name}:`, error);
     } finally {
       await page.close();
     }
@@ -271,120 +357,8 @@ export class REAScraper {
     return results;
   }
 
-  private getStateCode(stateName: string): string {
-    const stateMap: { [key: string]: string } = {
-      'New South Wales': 'NSW',
-      'Victoria': 'VIC',
-      'Queensland': 'QLD',
-      'Western Australia': 'WA',
-      'South Australia': 'SA',
-      'Tasmania': 'TAS',
-      'Australian Capital Territory': 'ACT',
-      'Northern Territory': 'NT',
-    };
-    return stateMap[stateName] || stateName.toUpperCase();
-  }
-
-  private extractPostcode(address: string): string {
-    const postcodeMatch = address.match(/\b\d{4}\b/);
-    return postcodeMatch ? postcodeMatch[0] : '';
-  }
-
-  private looksLikeAuctionResult(text: string): boolean {
-    const indicators = [
-      /\$[\d,]+/,  // Contains price
-      /\b\d{4}\b/,  // Contains postcode
-      /\b(sold|passed|withdrawn)\b/i,  // Contains result
-      /\b(bed|bath|car)\b/i,  // Contains property features
-    ];
-    
-    return indicators.filter(pattern => pattern.test(text)).length >= 2;
-  }
-
-  private extractAddress(text: string): string | null {
-    const lines = text.split('\n').map(line => line.trim());
-    // Look for line that contains address-like patterns
-    for (const line of lines) {
-      if (line.match(/\d+.*\b(street|st|road|rd|avenue|ave|drive|dr|lane|ln|court|ct|place|pl)\b/i)) {
-        return line;
-      }
-    }
-    return lines[0] || null;
-  }
-
-  private extractPrice(text: string): string {
-    const priceMatch = text.match(/\$([\d,]+(?:\.\d{2})?)/i);
-    return priceMatch ? priceMatch[0] : '';
-  }
-
-  private extractResult(text: string): string {
-    const resultMatch = text.match(/\b(sold|passed|withdrawn|cancelled)\b/i);
-    return resultMatch ? resultMatch[1].toLowerCase() : '';
-  }
-
-  private extractPropertyType(text: string): string {
-    const typeMatch = text.match(/\b(house|apartment|unit|townhouse|villa|duplex)\b/i);
-    return typeMatch ? typeMatch[1] : 'House';
-  }
-
-  private extractBedrooms(text: string): number | undefined {
-    const match = text.match(/(\d+)\s*bed/i);
+  private extractNumber(text: string, pattern: RegExp): number | undefined {
+    const match = text.match(pattern);
     return match ? parseInt(match[1]) : undefined;
-  }
-
-  private extractBathrooms(text: string): number | undefined {
-    const match = text.match(/(\d+)\s*bath/i);
-    return match ? parseInt(match[1]) : undefined;
-  }
-
-  private extractCarSpaces(text: string): number | undefined {
-    const match = text.match(/(\d+)\s*car/i);
-    return match ? parseInt(match[1]) : undefined;
-  }
-
-  private extractAgentName(text: string): string | undefined {
-    const lines = text.split('\n').map(line => line.trim());
-    // Look for agent name patterns
-    for (const line of lines) {
-      if (line.match(/^[A-Z][a-z]+ [A-Z][a-z]+$/)) {
-        return line;
-      }
-    }
-    return undefined;
-  }
-
-  private extractAgencyName(text: string): string | undefined {
-    const lines = text.split('\n').map(line => line.trim());
-    // Look for agency name patterns (typically contains "Real Estate" or "Realty")
-    for (const line of lines) {
-      if (line.match(/\b(real estate|realty|properties|property|group)\b/i)) {
-        return line;
-      }
-    }
-    return undefined;
-  }
-
-  private extractPropertyUrl($element: any): string | undefined {
-    // Look for property links within the element
-    const propertyLink = $element.find('a[href*="/property/"]').first();
-    if (propertyLink.length > 0) {
-      const href = propertyLink.attr('href');
-      if (href && href.startsWith('/')) {
-        return `https://www.realestate.com.au${href}`;
-      } else if (href && href.startsWith('https://www.realestate.com.au')) {
-        return href;
-      }
-    }
-    
-    // Alternative: look for any link that might be a property URL
-    const anyLink = $element.find('a[href*="realestate.com.au"]').first();
-    if (anyLink.length > 0) {
-      const href = anyLink.attr('href');
-      if (href && (href.includes('/property/') || href.includes('/buy/') || href.includes('/rent/'))) {
-        return href.startsWith('http') ? href : `https://www.realestate.com.au${href}`;
-      }
-    }
-    
-    return undefined;
   }
 }

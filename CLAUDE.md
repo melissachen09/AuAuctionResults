@@ -34,7 +34,7 @@ Run both `npm run lint` and `npm run type-check` before committing changes.
 
 ### API Architecture
 - **RESTful design** with structured error handling
-- **Authentication**: Bearer token validation in production (API_KEY env var)
+- **Authentication**: Bearer token validation in production (API_SECRET env var)
 - **Pagination**: Standardized across endpoints with page/limit parameters
 - **Time-based filtering**: Configurable periods (4weeks, 12weeks, 6months, 1year)
 
@@ -79,7 +79,7 @@ Key patterns:
 ### Environment Configuration
 Required environment variables:
 - `DATABASE_URL`: PostgreSQL connection string
-- `API_KEY`: Authentication for scraping endpoints (production)
+- `API_SECRET`: Authentication for scraping endpoints (production)
 - `NODE_ENV`: Environment mode
 
 ### Deployment
@@ -117,3 +117,6 @@ src/
 - Database uses composite unique constraints to prevent duplicate auction records
 - All API responses follow consistent error handling structure
 - Playwright scrapers handle dynamic content loading with proper wait conditions
+
+## Workflow Insights
+- Read and understand the workflow file located at `/workspaces/AuAuctionResults/workflow.md` to get detailed insights into the project's operational processes

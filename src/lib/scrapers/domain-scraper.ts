@@ -1,14 +1,43 @@
 import { chromium, Browser } from 'playwright';
-import { load } from 'cheerio';
+import * as cheerio from 'cheerio';
 import PQueue from 'p-queue';
 import { RawAuctionData, ScraperConfig, ScraperResult } from './types';
 
+interface DomainScraperConfig extends ScraperConfig {
+  maxSuburbsPerCity?: number;
+}
+
 export class DomainScraper {
-  private config: ScraperConfig;
+  private config: DomainScraperConfig;
   private browser: Browser | null = null;
 
-  constructor(config: ScraperConfig) {
-    this.config = config;
+  constructor(config: DomainScraperConfig) {
+    this.config = {
+      ...config,
+      maxSuburbsPerCity: config.maxSuburbsPerCity || 10
+    };
+  }
+
+  private constructUrl(href: string): string {
+    if (!href) return '';
+    
+    // If href already starts with http, return as is
+    if (href.startsWith('http://') || href.startsWith('https://')) {
+      return href;
+    }
+    
+    // If href starts with //, prepend https:
+    if (href.startsWith('//')) {
+      return 'https:' + href;
+    }
+    
+    // If href starts with /, prepend domain
+    if (href.startsWith('/')) {
+      return 'https://www.domain.com.au' + href;
+    }
+    
+    // Otherwise, assume it's a relative path
+    return 'https://www.domain.com.au/' + href;
   }
 
   private async safeOperation<T>(operation: () => Promise<T>, operationName: string, maxRetries = 3): Promise<T> {
@@ -64,42 +93,31 @@ export class DomainScraper {
       await this.initialize();
       const results: RawAuctionData[] = [];
       
-      // Get the auction results page
-      const page = await this.browser!.newPage();
-      await page.goto('https://www.domain.com.au/auction-results/', {
-        waitUntil: 'networkidle',
-        timeout: this.config.timeout,
-      });
+      // Define city URLs directly
+      const cityUrls = [
+        'https://www.domain.com.au/auction-results/sydney/',
+        'https://www.domain.com.au/auction-results/melbourne/',
+        'https://www.domain.com.au/auction-results/brisbane/',
+        'https://www.domain.com.au/auction-results/adelaide/',
+        'https://www.domain.com.au/auction-results/canberra/',
+        'https://www.domain.com.au/auction-results/perth/'
+      ];
 
-      // Wait for content to load using semantic approach
-      await this.safeOperation(
-        () => page.waitForSelector('main, [role="main"], nav, .css-1u9z1zr', { timeout: 10000 }),
-        'Wait for main content'
-      );
-
-      // Get all state links using semantic selectors
-      const stateLinks = await this.safeOperation(
-        () => page.$$eval('a[href*="/auction-results/"]', (links) =>
-          links
-            .map((link) => link.getAttribute('href'))
-            .filter((href) => href && href.includes('/auction-results/') && href.split('/').length > 3)
-        ),
-        'Extract state links'
-      );
-
+      console.log(`Starting Domain scraper with ${cityUrls.length} cities`);
       const queue = new PQueue({ concurrency: this.config.maxConcurrency });
 
-      // Process each state
-      for (const stateLink of stateLinks) {
+      // Process each city
+      for (const cityUrl of cityUrls) {
         queue.add(async () => {
-          const stateResults = await this.scrapeState(stateLink!);
-          results.push(...stateResults);
+          const cityResults = await this.scrapeCity(cityUrl);
+          results.push(...cityResults);
         });
       }
 
       await queue.onIdle();
       await this.close();
 
+      console.log(`Domain scraper completed: ${results.length} properties found`);
       return {
         success: true,
         data: results,
@@ -115,33 +133,79 @@ export class DomainScraper {
     }
   }
 
-  private async scrapeState(stateUrl: string): Promise<RawAuctionData[]> {
+  private async scrapeCity(cityUrl: string): Promise<RawAuctionData[]> {
     const results: RawAuctionData[] = [];
     const page = await this.browser!.newPage();
 
     try {
-      await page.goto(`https://www.domain.com.au${stateUrl}`, {
+      console.log(`Scraping city: ${cityUrl}`);
+      
+      // Set user agent to avoid bot detection
+      await page.setExtraHTTPHeaders({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      });
+      
+      await page.goto(cityUrl, {
         waitUntil: 'networkidle',
         timeout: this.config.timeout,
       });
 
-      // Get suburb links using semantic selectors
-      const suburbLinks = await this.safeOperation(
-        () => page.$$eval('a[href*="/auction-results/"]', (links) =>
+      // Add delay to ensure page fully loads
+      await this.delay(2000);
+
+      // Wait for suburb links to load
+      await this.safeOperation(
+        () => page.waitForSelector('.suburb-results__suburb-item a, a[href*="/auction-results/"][href*="-nsw-"], a[href*="-vic-"], a[href*="-qld-"], a[href*="-sa-"], a[href*="-wa-"], a[href*="-act-"]', { timeout: 15000 }),
+        'Wait for suburb links'
+      );
+
+      // Get suburb links with better selectors
+      const suburbData = await this.safeOperation(
+        () => page.$$eval('.suburb-results__suburb-item a, a[href*="/auction-results/"][href*="-nsw-"], a[href*="-vic-"], a[href*="-qld-"], a[href*="-sa-"], a[href*="-wa-"], a[href*="-act-"]', (links) =>
           links
-            .map((link) => link.getAttribute('href'))
-            .filter((href) => href && href.split('/').length > 4)
+            .map((link) => ({
+              href: link.getAttribute('href'),
+              text: link.textContent?.trim(),
+              parent: link.parentElement?.textContent?.trim()
+            }))
+            .filter((item) => {
+              if (!item.href) return false;
+              // Check if it's a suburb link with state code
+              return item.href.includes('/auction-results/') && 
+                     (item.href.includes('-nsw-') || 
+                      item.href.includes('-vic-') || 
+                      item.href.includes('-qld-') || 
+                      item.href.includes('-sa-') || 
+                      item.href.includes('-wa-') || 
+                      item.href.includes('-act-') ||
+                      item.href.includes('-tas-') ||
+                      item.href.includes('-nt-'));
+            })
+            .map(item => ({
+              url: item.href!,
+              suburbName: item.text || ''
+            }))
         ),
         'Extract suburb links'
       );
 
-      // Process each suburb
-      for (const suburbLink of suburbLinks) {
-        const suburbResults = await this.scrapeSuburb(suburbLink!);
+      console.log(`Found ${suburbData.length} suburbs in ${cityUrl}`);
+
+      // Process suburbs with rate limiting
+      const suburbsToProcess = suburbData.slice(0, this.config.maxSuburbsPerCity || 10);
+      
+      for (let i = 0; i < suburbsToProcess.length; i++) {
+        console.log(`Processing suburb ${i + 1}/${suburbsToProcess.length}: ${suburbsToProcess[i].suburbName}`);
+        const suburbResults = await this.scrapeSuburb(suburbsToProcess[i].url);
         results.push(...suburbResults);
+        
+        // Add delay between suburbs
+        if (i < suburbsToProcess.length - 1) {
+          await this.delay(1000);
+        }
       }
     } catch (error) {
-      console.error(`Error scraping state ${stateUrl}:`, error);
+      console.error(`Error scraping city ${cityUrl}:`, error);
     } finally {
       await page.close();
     }
@@ -154,46 +218,107 @@ export class DomainScraper {
     const page = await this.browser!.newPage();
 
     try {
-      await page.goto(`https://www.domain.com.au${suburbUrl}`, {
+      const fullUrl = this.constructUrl(suburbUrl);
+      console.log(`Scraping suburb: ${fullUrl}`);
+      
+      // Set user agent
+      await page.setExtraHTTPHeaders({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      });
+      
+      await page.goto(fullUrl, {
         waitUntil: 'networkidle',
         timeout: this.config.timeout,
       });
 
-      // Wait for auction results using semantic selectors
+      // Add delay to ensure content loads
+      await this.delay(2000);
+
+      // Wait for auction results with better selectors
       await this.safeOperation(
-        () => page.waitForSelector('main, [role="main"], [data-testid="auction-results-list"], article, .property', { timeout: 10000 }),
+        () => page.waitForSelector('.css-1b38kx6, .css-kz9pbu, article[data-testid="listing-card"], div[data-testid="property-card"], .auction-results__property, .property-listing', { timeout: 15000 }),
         'Wait for auction results'
       );
 
+      // Extract suburb info from URL more reliably
+      const urlMatch = suburbUrl.match(/\/auction-results\/([^/]+)\/([^-]+)-([a-z]{2,3})-([0-9]{4})/);
+      let suburb = '';
+      let state = '';
+      let postcode = '';
+      
+      if (urlMatch) {
+        suburb = urlMatch[2].replace(/-/g, ' ');
+        state = urlMatch[3].toUpperCase();
+        postcode = urlMatch[4];
+      } else {
+        // Fallback parsing
+        const urlParts = suburbUrl.split('/').filter(p => p);
+        const lastPart = urlParts[urlParts.length - 1];
+        const match = lastPart.match(/(.+)-([a-z]{2,3})-([0-9]{4})/i);
+        if (match) {
+          suburb = match[1].replace(/-/g, ' ');
+          state = match[2].toUpperCase();
+          postcode = match[3];
+        }
+      }
+
+      console.log(`Parsing properties for ${suburb}, ${state} ${postcode}`);
+
+      // Get page content and initialize cheerio
       const html = await page.content();
-      const $ = load(html);
+      const $ = cheerio.load(html);
 
-      // Extract suburb info from URL
-      const urlParts = suburbUrl.split('/');
-      const suburb = urlParts[urlParts.length - 3];
-      const state = urlParts[urlParts.length - 2];
-      const postcode = urlParts[urlParts.length - 1];
+      // Parse auction results using specific selectors
+      const propertySelectors = [
+        '.css-1b38kx6',
+        '.css-kz9pbu', 
+        'article[data-testid="listing-card"]',
+        'div[data-testid="property-card"]',
+        '.auction-results__property',
+        '.property-listing',
+        'div[class*="property"][class*="card"]',
+        'article[class*="listing"]'
+      ];
+      
+      const $properties = $(propertySelectors.join(', '));
+      console.log(`Found ${$properties.length} property elements`);
 
-      // Parse auction results using intelligent content detection
-      const potentialContainers = $('div, article, section, li').filter((_, element) => {
-        const text = $(element).text();
-        return this.looksLikeAuctionResult(text);
-      });
-
-      potentialContainers.each((_, element) => {
+      $properties.each((index: number, element: any) => {
         try {
           const $el = $(element);
           
+          // Extract text and structure
           const allText = $el.text();
-          const address = this.extractAddress(allText);
-          const priceText = this.extractPrice(allText);
-          const resultText = this.extractResult(allText);
+          const htmlContent = $el.html();
+          
+          // Try to find address more precisely
+          const addressEl = $el.find('h2, h3, [data-testid="address"], .property-address, .listing-address, a[href*="/sale/"], a[href*="/property/"]').first();
+          const address = addressEl.length > 0 ? addressEl.text().trim() : this.extractAddress(allText);
+          
+          // Extract price with better selectors
+          const priceEl = $el.find('.property-price, .listing-price, [data-testid="price"], .price, span:contains("$"), div:contains("$")').first();
+          const priceText = priceEl.length > 0 ? priceEl.text().trim() : this.extractPrice(allText);
+          
+          // Extract result with better detection
+          const resultEl = $el.find('.property-status, .listing-status, [data-testid="status"], .result, .tag').first();
+          const resultText = resultEl.length > 0 ? resultEl.text().trim() : this.extractResult(allText);
+          
+          // Extract property details
+          const detailsEl = $el.find('.property-features, .listing-features, [data-testid="property-features"], .features');
+          const detailsText = detailsEl.length > 0 ? detailsEl.text() : allText;
+          
           const propertyType = this.extractPropertyType(allText);
-          const bedroomsText = this.extractBedrooms(allText);
-          const bathroomsText = this.extractBathrooms(allText);
-          const carSpacesText = this.extractCarSpaces(allText);
-          const agentName = this.extractAgentName(allText);
-          const agencyName = this.extractAgencyName(allText);
+          const bedroomsText = this.extractBedrooms(detailsText);
+          const bathroomsText = this.extractBathrooms(detailsText);
+          const carSpacesText = this.extractCarSpaces(detailsText);
+          
+          // Extract agent info
+          const agentEl = $el.find('.agent-name, .listing-agent, [data-testid="agent-name"]').first();
+          const agentName = agentEl.length > 0 ? agentEl.text().trim() : this.extractAgentName(allText);
+          
+          const agencyEl = $el.find('.agency-name, .listing-agency, [data-testid="agency-name"]').first();
+          const agencyName = agencyEl.length > 0 ? agencyEl.text().trim() : this.extractAgencyName(allText);
+          
           const propertyUrl = this.extractPropertyUrl($el);
 
           // Parse price
@@ -202,18 +327,24 @@ export class DomainScraper {
             price = parseInt(priceText.replace(/[^0-9]/g, ''));
           }
 
-          // Determine result
+          // Determine result with better logic
           let result: 'sold' | 'passed_in' | 'withdrawn' = 'passed_in';
-          if (resultText.includes('sold')) {
+          const lowerResult = resultText.toLowerCase();
+          if (lowerResult.includes('sold') || (priceText && parseInt(priceText.replace(/[^0-9]/g, '')) > 0)) {
             result = 'sold';
-          } else if (resultText.includes('withdrawn')) {
+          } else if (lowerResult.includes('withdrawn') || lowerResult.includes('cancelled')) {
             result = 'withdrawn';
+          } else if (lowerResult.includes('passed') || lowerResult.includes('pass')) {
+            result = 'passed_in';
           }
 
-          if (address) {
+          if (address && address.length > 5 && address.length < 200) {
+            // Clean up suburb name
+            const cleanSuburb = suburb.charAt(0).toUpperCase() + suburb.slice(1).toLowerCase();
+            
             results.push({
               address,
-              suburb: suburb.replace(/-/g, ' '),
+              suburb: cleanSuburb,
               state: state.toUpperCase(),
               postcode,
               price,
@@ -228,6 +359,10 @@ export class DomainScraper {
               agencyName: agencyName || undefined,
               propertyUrl: propertyUrl || undefined,
             });
+            
+            if (index < 3) {
+              console.log(`Sample property ${index + 1}: ${address} - ${result} ${priceText}`);
+            }
           }
         } catch (error) {
           console.error('Error parsing auction result:', error);

@@ -2,6 +2,7 @@ import { prisma } from '@/lib/db';
 import { DomainScraper } from './domain-scraper';
 import { REAScraper } from './rea-scraper';
 import { RawAuctionData, ScraperConfig } from './types';
+import { PrismaClient } from '@prisma/client';
 
 export class ScraperService {
   private config: ScraperConfig = {
@@ -10,6 +11,11 @@ export class ScraperService {
     retryDelay: 5000,
     timeout: 30000,
   };
+  private prismaClient: PrismaClient;
+
+  constructor(prismaClient?: PrismaClient) {
+    this.prismaClient = prismaClient || prisma;
+  }
 
   async runDomainScraper(date?: Date): Promise<void> {
     const scraper = new DomainScraper(this.config);
@@ -24,7 +30,7 @@ export class ScraperService {
         await this.saveAuctionData(result.data);
         
         // Log successful scrape
-        await prisma.scrapeLog.create({
+        await this.prismaClient.scrapeLog.create({
           data: {
             source: 'domain',
             status: 'success',
@@ -35,7 +41,7 @@ export class ScraperService {
         });
       } else {
         // Log failed scrape
-        await prisma.scrapeLog.create({
+        await this.prismaClient.scrapeLog.create({
           data: {
             source: 'domain',
             status: 'failed',
@@ -47,7 +53,7 @@ export class ScraperService {
       }
     } catch (error) {
       console.error('Domain scraper error:', error);
-      await prisma.scrapeLog.create({
+      await this.prismaClient.scrapeLog.create({
         data: {
           source: 'domain',
           status: 'failed',
@@ -72,7 +78,7 @@ export class ScraperService {
         await this.saveAuctionData(result.data);
         
         // Log successful scrape
-        await prisma.scrapeLog.create({
+        await this.prismaClient.scrapeLog.create({
           data: {
             source: 'rea',
             status: 'success',
@@ -83,7 +89,7 @@ export class ScraperService {
         });
       } else {
         // Log failed scrape
-        await prisma.scrapeLog.create({
+        await this.prismaClient.scrapeLog.create({
           data: {
             source: 'rea',
             status: 'failed',
@@ -95,7 +101,7 @@ export class ScraperService {
       }
     } catch (error) {
       console.error('REA scraper error:', error);
-      await prisma.scrapeLog.create({
+      await this.prismaClient.scrapeLog.create({
         data: {
           source: 'rea',
           status: 'failed',
@@ -119,6 +125,91 @@ export class ScraperService {
     console.log('All scrapers completed');
   }
 
+  async processAuctionData(data: RawAuctionData[]): Promise<number> {
+    console.log(`Processing ${data.length} auction records...`);
+    const startTime = new Date();
+    let processedCount = 0;
+
+    try {
+      await this.saveAuctionData(data);
+      processedCount = data.length;
+
+      // Log the processing
+      await this.prismaClient.scrapeLog.create({
+        data: {
+          source: data[0]?.source || 'unknown',
+          status: 'success',
+          startTime,
+          endTime: new Date(),
+          recordCount: processedCount,
+        },
+      });
+
+      return processedCount;
+    } catch (error) {
+      console.error('Error processing auction data:', error);
+      await this.prismaClient.scrapeLog.create({
+        data: {
+          source: data[0]?.source || 'unknown',
+          status: 'failed',
+          startTime,
+          endTime: new Date(),
+          errorLog: error instanceof Error ? error.message : 'Unknown error',
+        },
+      });
+      throw error;
+    }
+  }
+
+  async calculateSuburbStats(date: Date): Promise<void> {
+    console.log('Calculating suburb statistics...');
+    
+    // Get all unique suburbs from auctions
+    const suburbs = await this.prismaClient.auction.groupBy({
+      by: ['suburb', 'state'],
+      where: {
+        auctionDate: {
+          gte: new Date(date.getFullYear(), date.getMonth(), date.getDate()),
+          lt: new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1),
+        },
+      },
+    });
+
+    // Calculate stats for each suburb
+    for (const { suburb, state } of suburbs) {
+      const auctions = await this.prismaClient.auction.findMany({
+        where: {
+          suburb,
+          state,
+          auctionDate: {
+            gte: new Date(date.getFullYear(), date.getMonth(), date.getDate()),
+            lt: new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1),
+          },
+        },
+      });
+
+      // Map to RawAuctionData format
+      const rawAuctions: RawAuctionData[] = auctions.map(auction => ({
+        address: auction.address,
+        suburb: auction.suburb,
+        state: auction.state,
+        postcode: auction.postcode,
+        price: auction.price ?? undefined,
+        result: auction.result as 'sold' | 'passed_in' | 'withdrawn',
+        auctionDate: auction.auctionDate,
+        source: auction.source as 'domain' | 'rea',
+        propertyType: auction.propertyType,
+        bedrooms: auction.bedrooms ?? undefined,
+        bathrooms: auction.bathrooms ?? undefined,
+        carSpaces: auction.carSpaces ?? undefined,
+        agentName: auction.agentName ?? undefined,
+        agencyName: auction.agencyName ?? undefined
+      }));
+
+      await this.updateSuburbStats(rawAuctions);
+    }
+  }
+
   private async saveAuctionData(data: RawAuctionData[]): Promise<void> {
     const batchSize = 100;
     
@@ -128,11 +219,12 @@ export class ScraperService {
       await Promise.all(
         batch.map(async (auction) => {
           try {
-            await prisma.auction.upsert({
+            await this.prismaClient.auction.upsert({
               where: {
-                address_auctionDate: {
+                address_auctionDate_source: {
                   address: auction.address,
                   auctionDate: auction.auctionDate,
+                  source: auction.source,
                 },
               },
               update: {
@@ -191,7 +283,7 @@ export class ScraperService {
         ? this.calculateMedian(soldPrices)
         : null;
 
-      await prisma.suburbStats.upsert({
+      await this.prismaClient.suburbStats.upsert({
         where: {
           suburb_state_date: {
             suburb,
