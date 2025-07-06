@@ -1,24 +1,30 @@
 'use client';
 
 import { useState } from 'react';
-import { SuburbsTable } from '@/components/dashboard/suburbs-table';
-import { Filters } from '@/components/dashboard/filters';
+import { PropertiesTable } from '@/components/dashboard/properties-table';
+import { PropertyFilters } from '@/components/dashboard/property-filters';
 import { StatsCard } from '@/components/shared/stats-card';
-import { useSuburbs } from '@/hooks/use-suburbs';
+import { useProperties } from '@/hooks/use-properties';
 import { Home, TrendingUp, MapPin, DollarSign } from 'lucide-react';
 
 export default function DashboardPage() {
   const [filters, setFilters] = useState({
-    state: '',
-    date: '',
     search: '',
-    sortBy: 'clearanceRate',
+    suburb: '',
+    state: '',
+    result: '',
+    propertyType: '',
+    dateFrom: '',
+    dateTo: '',
+    priceMin: '',
+    priceMax: '',
+    sortBy: 'auctionDate',
     sortOrder: 'desc' as 'asc' | 'desc',
     page: 1,
     limit: 20,
   });
 
-  const { data, loading, error } = useSuburbs(filters);
+  const { data, loading, error } = useProperties(filters);
 
   const handleSort = (field: string) => {
     setFilters((prev) => ({
@@ -31,25 +37,25 @@ export default function DashboardPage() {
 
   // Calculate summary statistics
   const summaryStats = data?.data ? {
-    totalAuctions: data.data.reduce((sum, s) => sum + s.totalAuctions, 0),
-    totalSold: data.data.reduce((sum, s) => sum + s.soldCount, 0),
-    avgClearanceRate: data.data.length > 0
-      ? data.data.reduce((sum, s) => sum + s.clearanceRate, 0) / data.data.length
+    totalProperties: data.data.length,
+    totalSold: data.data.filter(p => p.result === 'sold').length,
+    clearanceRate: data.data.length > 0 
+      ? (data.data.filter(p => p.result === 'sold').length / data.data.length) * 100
       : 0,
-    avgMedianPrice: data.data.length > 0
+    avgPrice: data.data.filter(p => p.result === 'sold' && p.price).length > 0
       ? data.data
-          .filter(s => s.medianPrice)
-          .reduce((sum, s) => sum + (s.medianPrice || 0), 0) / 
-          data.data.filter(s => s.medianPrice).length
+          .filter(p => p.result === 'sold' && p.price)
+          .reduce((sum, p) => sum + (p.price || 0), 0) / 
+          data.data.filter(p => p.result === 'sold' && p.price).length
       : 0,
   } : null;
 
   return (
     <div className="container mx-auto px-4 py-8">
       <div className="mb-8">
-        <h1 className="text-3xl font-bold mb-2">数据仪表板</h1>
+        <h1 className="text-3xl font-bold mb-2">Property Dashboard</h1>
         <p className="text-muted-foreground">
-          查看各城区的拍卖清空率和市场表现
+          Search and view individual auction properties
         </p>
       </div>
 
@@ -57,28 +63,28 @@ export default function DashboardPage() {
       {summaryStats && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
           <StatsCard
-            title="总拍卖数"
-            value={summaryStats.totalAuctions.toLocaleString()}
+            title="Total Properties"
+            value={summaryStats.totalProperties.toLocaleString()}
             icon={<Home className="h-5 w-5" />}
           />
           <StatsCard
-            title="总售出数"
+            title="Sold Properties"
             value={summaryStats.totalSold.toLocaleString()}
             icon={<TrendingUp className="h-5 w-5" />}
           />
           <StatsCard
-            title="平均清空率"
-            value={`${summaryStats.avgClearanceRate.toFixed(1)}%`}
+            title="Clearance Rate"
+            value={`${summaryStats.clearanceRate.toFixed(1)}%`}
             icon={<MapPin className="h-5 w-5" />}
           />
           <StatsCard
-            title="平均中位价"
+            title="Average Price"
             value={new Intl.NumberFormat('en-AU', {
               style: 'currency',
               currency: 'AUD',
               minimumFractionDigits: 0,
               maximumFractionDigits: 0,
-            }).format(summaryStats.avgMedianPrice)}
+            }).format(summaryStats.avgPrice)}
             icon={<DollarSign className="h-5 w-5" />}
           />
         </div>
@@ -86,25 +92,22 @@ export default function DashboardPage() {
 
       {/* Filters */}
       <div className="mb-6">
-        <Filters
-          onStateChange={(state) => setFilters({ ...filters, state, page: 1 })}
-          onDateChange={(date) => setFilters({ ...filters, date, page: 1 })}
-          onSearchChange={(search) => setFilters({ ...filters, search, page: 1 })}
-          selectedState={filters.state}
-          selectedDate={filters.date}
+        <PropertyFilters
+          filters={filters}
+          onFiltersChange={(newFilters) => setFilters({ ...newFilters, page: 1 })}
         />
       </div>
 
       {/* Table */}
       {loading && (
         <div className="flex items-center justify-center py-12">
-          <div className="text-muted-foreground">加载中...</div>
+          <div className="text-muted-foreground">Loading...</div>
         </div>
       )}
 
       {error && (
         <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4 text-center">
-          <p className="text-destructive">加载数据时出错: {error}</p>
+          <p className="text-destructive">Error loading data: {error}</p>
         </div>
       )}
 
@@ -112,12 +115,12 @@ export default function DashboardPage() {
         <div>
           <div className="mb-4 p-4 bg-blue-50 rounded-lg">
             <p className="text-sm text-blue-700">
-              找到 {data.pagination.total} 条记录，第 {data.pagination.page} 页 / 共 {data.pagination.totalPages} 页
+              Found {data.pagination.total} properties, page {data.pagination.page} of {data.pagination.totalPages}
             </p>
           </div>
           
-          <SuburbsTable
-            suburbs={data.data || []}
+          <PropertiesTable
+            properties={data.data || []}
             totalPages={data.pagination.totalPages}
             currentPage={data.pagination.page}
             onPageChange={(page) => setFilters({ ...filters, page })}
@@ -130,7 +133,7 @@ export default function DashboardPage() {
 
       {data && !loading && !error && (!data.data || data.data.length === 0) && (
         <div className="text-center py-12">
-          <p className="text-muted-foreground">暂无数据</p>
+          <p className="text-muted-foreground">No properties found</p>
         </div>
       )}
 

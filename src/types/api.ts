@@ -30,6 +30,7 @@ export interface Auction {
   carSpaces: number | null;
   agentName: string | null;
   agencyName: string | null;
+  propertyUrl: string | null;
   createdAt: string;
   updatedAt: string;
 }

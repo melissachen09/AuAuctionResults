@@ -1,4 +1,4 @@
-import { chromium, Browser, Page } from 'playwright';
+import { chromium, Browser } from 'playwright';
 import { load } from 'cheerio';
 import PQueue from 'p-queue';
 import { RawAuctionData, ScraperConfig, ScraperResult } from './types';
@@ -10,6 +10,42 @@ export class REAScraper {
   constructor(config: ScraperConfig) {
     this.config = config;
   }
+
+  private async safeOperation<T>(operation: () => Promise<T>, operationName: string, maxRetries = 3): Promise<T> {
+    for (let i = 0; i < maxRetries; i++) {
+      try {
+        return await operation();
+      } catch (error) {
+        console.warn(`${operationName} failed, attempt ${i + 1}/${maxRetries}`, error);
+        
+        if (this.isRecoverableError(error)) {
+          await this.delay(2000 * (i + 1));
+          continue;
+        }
+        
+        throw error;
+      }
+    }
+    throw new Error(`${operationName} failed after ${maxRetries} attempts`);
+  }
+
+  private isRecoverableError(error: unknown): boolean {
+    const recoverablePatterns = [
+      'timeout',
+      'network',
+      'navigation',
+      'element not found'
+    ];
+    
+    return recoverablePatterns.some(pattern => 
+      (error as Error).message?.toLowerCase().includes(pattern)
+    );
+  }
+
+  private delay(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
 
   async initialize() {
     this.browser = await chromium.launch({
@@ -24,7 +60,7 @@ export class REAScraper {
     }
   }
 
-  async scrape(date?: Date): Promise<ScraperResult> {
+  async scrape(): Promise<ScraperResult> {
     try {
       await this.initialize();
       const results: RawAuctionData[] = [];
@@ -36,15 +72,21 @@ export class REAScraper {
         timeout: this.config.timeout,
       });
 
-      // Wait for content to load
-      await page.waitForSelector('.auction-results', { timeout: 10000 });
+      // Wait for content to load using semantic approach
+      await this.safeOperation(
+        () => page.waitForSelector('main, [role="main"], .auction-results', { timeout: 10000 }),
+        'Wait for main content'
+      );
 
-      // Get all state links
-      const stateLinks = await page.$$eval('.state-links a', (links) =>
-        links.map((link) => ({
-          href: link.getAttribute('href'),
-          state: link.textContent?.trim(),
-        })).filter((item) => item.href && item.state)
+      // Get all state links using semantic selectors
+      const stateLinks = await this.safeOperation(
+        () => page.$$eval('a[href*="auction-results"]', (links) =>
+          links.map((link) => ({
+            href: link.getAttribute('href'),
+            state: link.textContent?.trim(),
+          })).filter((item) => item.href && item.state && item.href.includes('auction-results'))
+        ),
+        'Extract state links'
       );
 
       const queue = new PQueue({ concurrency: this.config.maxConcurrency });
@@ -85,16 +127,31 @@ export class REAScraper {
         timeout: this.config.timeout,
       });
 
-      // Wait for suburb list to load
-      await page.waitForSelector('.suburb-list', { timeout: 10000 });
+      // Wait for suburb list using semantic selectors
+      await this.safeOperation(
+        () => page.waitForSelector('main, [role="main"], .suburb-list, ul, nav', { timeout: 10000 }),
+        'Wait for suburb list'
+      );
 
-      // Get suburb links
-      const suburbData = await page.$$eval('.suburb-list a', (links) =>
-        links.map((link) => ({
-          href: link.getAttribute('href'),
-          suburb: link.querySelector('.suburb-name')?.textContent?.trim(),
-          postcode: link.querySelector('.postcode')?.textContent?.trim(),
-        })).filter((item) => item.href && item.suburb)
+      // Get suburb links using intelligent content-based selection
+      const suburbData = await this.safeOperation(
+        () => page.$$eval('a[href*="auction-results"]', (links) => {
+          return links.map((link) => {
+            const href = link.getAttribute('href');
+            const text = link.textContent?.trim();
+            
+            // Extract suburb and postcode from text or URL
+            const postcodeMatch = text?.match(/\b\d{4}\b/) || href?.match(/\b\d{4}\b/);
+            const suburb = text?.replace(/\b\d{4}\b/, '').trim();
+            
+            return {
+              href,
+              suburb,
+              postcode: postcodeMatch?.[0],
+            };
+          }).filter((item) => item.href && item.suburb && item.href.split('/').length > 4);
+        }),
+        'Extract suburb data'
       );
 
       // Process each suburb
@@ -131,31 +188,39 @@ export class REAScraper {
         timeout: this.config.timeout,
       });
 
-      // Wait for auction results to load
-      await page.waitForSelector('.auction-results-list', { timeout: 10000 });
+      // Wait for auction results using semantic selectors
+      await this.safeOperation(
+        () => page.waitForSelector('main, [role="main"], .auction-results-list, article, .property', { timeout: 10000 }),
+        'Wait for auction results'
+      );
 
       const html = await page.content();
       const $ = load(html);
 
-      // Parse auction results
-      $('.auction-result-item').each((_, element) => {
+      // Parse auction results using intelligent content detection
+      const potentialContainers = $('div, article, section, li').filter((_, element) => {
+        const text = $(element).text();
+        return this.looksLikeAuctionResult(text);
+      });
+
+      potentialContainers.each((_, element) => {
         try {
           const $el = $(element);
           
-          const address = $el.find('.property-address').text().trim();
-          const priceText = $el.find('.property-price').text().trim();
-          const resultBadge = $el.find('.result-badge').text().trim().toLowerCase();
-          const propertyType = $el.find('.property-type').text().trim();
+          const allText = $el.text();
+          const address = this.extractAddress(allText);
+          const priceText = this.extractPrice(allText);
+          const resultBadge = this.extractResult(allText);
+          const propertyType = this.extractPropertyType(allText);
           
-          // Extract property features
-          const features = $el.find('.property-features span');
-          const bedroomsText = features.filter(':contains("bed")').text();
-          const bathroomsText = features.filter(':contains("bath")').text();
-          const carSpacesText = features.filter(':contains("car")').text();
+          // Extract property features using intelligent parsing
+          const bedrooms = this.extractBedrooms(allText);
+          const bathrooms = this.extractBathrooms(allText);
+          const carSpaces = this.extractCarSpaces(allText);
           
-          const agentInfo = $el.find('.agent-info');
-          const agentName = agentInfo.find('.agent-name').text().trim();
-          const agencyName = agentInfo.find('.agency-name').text().trim();
+          const agentName = this.extractAgentName(allText);
+          const agencyName = this.extractAgencyName(allText);
+          const propertyUrl = this.extractPropertyUrl($el);
 
           // Parse price
           let price: number | undefined;
@@ -174,27 +239,25 @@ export class REAScraper {
             result = 'withdrawn';
           }
 
-          // Parse property details
-          const bedrooms = bedroomsText ? parseInt(bedroomsText.match(/\d+/)?.[0] || '0') : undefined;
-          const bathrooms = bathroomsText ? parseInt(bathroomsText.match(/\d+/)?.[0] || '0') : undefined;
-          const carSpaces = carSpacesText ? parseInt(carSpacesText.match(/\d+/)?.[0] || '0') : undefined;
-
-          results.push({
-            address,
-            suburb: suburbName,
-            state: this.getStateCode(stateName),
-            postcode: postcode || this.extractPostcode(address),
-            price,
-            result,
-            auctionDate: new Date(),
-            source: 'rea',
-            propertyType: propertyType || 'House',
-            bedrooms,
-            bathrooms,
-            carSpaces,
-            agentName: agentName || undefined,
-            agencyName: agencyName || undefined,
-          });
+          if (address) {
+            results.push({
+              address,
+              suburb: suburbName,
+              state: this.getStateCode(stateName),
+              postcode: postcode || this.extractPostcode(address),
+              price,
+              result,
+              auctionDate: new Date(),
+              source: 'rea',
+              propertyType: propertyType || 'House',
+              bedrooms,
+              bathrooms,
+              carSpaces,
+              agentName: agentName || undefined,
+              agencyName: agencyName || undefined,
+              propertyUrl: propertyUrl || undefined,
+            });
+          }
         } catch (error) {
           console.error('Error parsing auction result:', error);
         }
@@ -225,5 +288,103 @@ export class REAScraper {
   private extractPostcode(address: string): string {
     const postcodeMatch = address.match(/\b\d{4}\b/);
     return postcodeMatch ? postcodeMatch[0] : '';
+  }
+
+  private looksLikeAuctionResult(text: string): boolean {
+    const indicators = [
+      /\$[\d,]+/,  // Contains price
+      /\b\d{4}\b/,  // Contains postcode
+      /\b(sold|passed|withdrawn)\b/i,  // Contains result
+      /\b(bed|bath|car)\b/i,  // Contains property features
+    ];
+    
+    return indicators.filter(pattern => pattern.test(text)).length >= 2;
+  }
+
+  private extractAddress(text: string): string | null {
+    const lines = text.split('\n').map(line => line.trim());
+    // Look for line that contains address-like patterns
+    for (const line of lines) {
+      if (line.match(/\d+.*\b(street|st|road|rd|avenue|ave|drive|dr|lane|ln|court|ct|place|pl)\b/i)) {
+        return line;
+      }
+    }
+    return lines[0] || null;
+  }
+
+  private extractPrice(text: string): string {
+    const priceMatch = text.match(/\$([\d,]+(?:\.\d{2})?)/i);
+    return priceMatch ? priceMatch[0] : '';
+  }
+
+  private extractResult(text: string): string {
+    const resultMatch = text.match(/\b(sold|passed|withdrawn|cancelled)\b/i);
+    return resultMatch ? resultMatch[1].toLowerCase() : '';
+  }
+
+  private extractPropertyType(text: string): string {
+    const typeMatch = text.match(/\b(house|apartment|unit|townhouse|villa|duplex)\b/i);
+    return typeMatch ? typeMatch[1] : 'House';
+  }
+
+  private extractBedrooms(text: string): number | undefined {
+    const match = text.match(/(\d+)\s*bed/i);
+    return match ? parseInt(match[1]) : undefined;
+  }
+
+  private extractBathrooms(text: string): number | undefined {
+    const match = text.match(/(\d+)\s*bath/i);
+    return match ? parseInt(match[1]) : undefined;
+  }
+
+  private extractCarSpaces(text: string): number | undefined {
+    const match = text.match(/(\d+)\s*car/i);
+    return match ? parseInt(match[1]) : undefined;
+  }
+
+  private extractAgentName(text: string): string | undefined {
+    const lines = text.split('\n').map(line => line.trim());
+    // Look for agent name patterns
+    for (const line of lines) {
+      if (line.match(/^[A-Z][a-z]+ [A-Z][a-z]+$/)) {
+        return line;
+      }
+    }
+    return undefined;
+  }
+
+  private extractAgencyName(text: string): string | undefined {
+    const lines = text.split('\n').map(line => line.trim());
+    // Look for agency name patterns (typically contains "Real Estate" or "Realty")
+    for (const line of lines) {
+      if (line.match(/\b(real estate|realty|properties|property|group)\b/i)) {
+        return line;
+      }
+    }
+    return undefined;
+  }
+
+  private extractPropertyUrl($element: any): string | undefined {
+    // Look for property links within the element
+    const propertyLink = $element.find('a[href*="/property/"]').first();
+    if (propertyLink.length > 0) {
+      const href = propertyLink.attr('href');
+      if (href && href.startsWith('/')) {
+        return `https://www.realestate.com.au${href}`;
+      } else if (href && href.startsWith('https://www.realestate.com.au')) {
+        return href;
+      }
+    }
+    
+    // Alternative: look for any link that might be a property URL
+    const anyLink = $element.find('a[href*="realestate.com.au"]').first();
+    if (anyLink.length > 0) {
+      const href = anyLink.attr('href');
+      if (href && (href.includes('/property/') || href.includes('/buy/') || href.includes('/rent/'))) {
+        return href.startsWith('http') ? href : `https://www.realestate.com.au${href}`;
+      }
+    }
+    
+    return undefined;
   }
 }

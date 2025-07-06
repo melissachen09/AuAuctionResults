@@ -13,6 +13,7 @@ export interface RawAuctionData {
   carSpaces?: number;
   agentName?: string;
   agencyName?: string;
+  propertyUrl?: string;
 }
 
 export interface ScraperConfig {

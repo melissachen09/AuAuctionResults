@@ -23,12 +23,15 @@ model Auction {
   carSpaces     Int?
   agentName     String?
   agencyName    String?
+  propertyUrl   String?  // NEW: Link to original property listing
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
-  @@unique([address, auctionDate])
-  @@index([suburb])
+  @@unique([address, auctionDate, source]) // Enhanced to prevent cross-source duplicates
+  @@index([suburb, state])
   @@index([auctionDate])
+  @@index([result])
+  @@index([propertyType])
 }
 
 model SuburbStats {

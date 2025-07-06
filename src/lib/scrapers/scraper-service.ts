@@ -17,7 +17,7 @@ export class ScraperService {
 
     try {
       console.log('Starting Domain scraper...');
-      const result = await scraper.scrape(date);
+      const result = await scraper.scrape();
 
       if (result.success && result.data) {
         console.log(`Scraped ${result.recordCount} records from Domain`);
@@ -65,7 +65,7 @@ export class ScraperService {
 
     try {
       console.log('Starting REA scraper...');
-      const result = await scraper.scrape(date);
+      const result = await scraper.scrape();
 
       if (result.success && result.data) {
         console.log(`Scraped ${result.recordCount} records from REA`);
