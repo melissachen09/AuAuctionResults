@@ -1,13 +1,41 @@
 {
-  "deployedAt": "2025-07-05T12:30:57Z",
+  "deployedAt": "2025-01-06T06:30:00Z",
   "deploymentUrl": "https://au-auction-results-1751718481-fv68stjcx-yqm0nk3ys-projects.vercel.app",
+  "version": "enhanced-property-tracking-v2.0",
   "apiSecret": "I3pqIWtzjDmH93N7gTGb6r/z590dqpH3wGPmX35dTi0=",
-  "important": "请立即在 Vercel Dashboard 中创建 Postgres 数据库！",
+  "enhancements": [
+    "Database schema enhanced with propertyUrl field",
+    "Individual property tracking instead of suburb aggregation",
+    "Advanced search and filtering capabilities",
+    "Property URL extraction from Domain and REA",
+    "Cross-source deduplication prevention",
+    "Mobile-responsive dashboard redesign"
+  ],
+  "databaseMigration": {
+    "status": "ready",
+    "file": "prisma/migrations/20250106_add_property_url_and_enhanced_indexes/migration.sql",
+    "command": "npx prisma migrate deploy"
+  },
+  "newFeatures": {
+    "individualProperties": true,
+    "propertyUrls": true,
+    "advancedFiltering": true,
+    "crossSourceDeduplication": true,
+    "mobileResponsive": true,
+    "performanceIndexes": true
+  },
+  "targetCoverage": {
+    "domainCities": 5,
+    "reaStates": 8,
+    "totalSources": 13
+  },
+  "buildStatus": "successful",
+  "deploymentStatus": "enhanced-version-ready",
   "nextSteps": [
-    "1. 访问 Vercel Dashboard",
-    "2. 选择你的项目",
-    "3. 点击 Storage → Create Database → Postgres",
-    "4. 选择 Sydney 区域",
-    "5. 数据库创建后运行: vercel env pull && npx prisma migrate deploy"
+    "1. Apply database migration: npx prisma migrate deploy",
+    "2. Test enhanced dashboard at /dashboard",
+    "3. Verify property search functionality",
+    "4. Test scraper enhancements",
+    "5. Monitor performance with new indexes"
   ]
 }
