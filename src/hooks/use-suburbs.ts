@@ -31,11 +31,21 @@ export function useSuburbs(options: UseSuburbsOptions = {}) {
       if (options.limit) params.append('limit', options.limit.toString());
 
       try {
+        console.log('Fetching suburbs with params:', params.toString());
         const response = await fetch(`/api/suburbs?${params}`);
-        if (!response.ok) throw new Error('Failed to fetch suburbs');
+        console.log('Response status:', response.status);
+        
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error('API error:', errorText);
+          throw new Error(`Failed to fetch suburbs: ${response.status} ${response.statusText}`);
+        }
+        
         const data = await response.json();
+        console.log('Fetched suburbs data:', data);
         setData(data);
       } catch (err) {
+        console.error('Suburbs fetch error:', err);
         setError(err instanceof Error ? err.message : 'An error occurred');
       } finally {
         setLoading(false);

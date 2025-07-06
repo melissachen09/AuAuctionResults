@@ -109,15 +109,40 @@ export default function DashboardPage() {
       )}
 
       {data && !loading && !error && (
-        <SuburbsTable
-          suburbs={data.data}
-          totalPages={data.pagination.totalPages}
-          currentPage={data.pagination.page}
-          onPageChange={(page) => setFilters({ ...filters, page })}
-          onSort={handleSort}
-          sortBy={filters.sortBy}
-          sortOrder={filters.sortOrder}
-        />
+        <div>
+          <div className="mb-4 p-4 bg-blue-50 rounded-lg">
+            <p className="text-sm text-blue-700">
+              找到 {data.pagination.total} 条记录，第 {data.pagination.page} 页 / 共 {data.pagination.totalPages} 页
+            </p>
+          </div>
+          
+          <SuburbsTable
+            suburbs={data.data || []}
+            totalPages={data.pagination.totalPages}
+            currentPage={data.pagination.page}
+            onPageChange={(page) => setFilters({ ...filters, page })}
+            onSort={handleSort}
+            sortBy={filters.sortBy}
+            sortOrder={filters.sortOrder}
+          />
+        </div>
+      )}
+
+      {data && !loading && !error && (!data.data || data.data.length === 0) && (
+        <div className="text-center py-12">
+          <p className="text-muted-foreground">暂无数据</p>
+        </div>
+      )}
+
+      {/* Debug information in development */}
+      {process.env.NODE_ENV === 'development' && (
+        <div className="mt-8 p-4 bg-gray-100 rounded-lg">
+          <h3 className="font-semibold mb-2">Debug Information</h3>
+          <p>Loading: {loading ? 'true' : 'false'}</p>
+          <p>Error: {error || 'none'}</p>
+          <p>Data: {data ? `${data.data?.length || 0} items` : 'null'}</p>
+          <p>Current filters: {JSON.stringify(filters)}</p>
+        </div>
       )}
     </div>
   );
